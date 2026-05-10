@@ -1,0 +1,23 @@
+{
+  "active_plan": "/home/yuey1ng/mini/raknet-proxy/.sisyphus/plans/miniworld-proto-align.md",
+  "started_at": "2026-05-10T05:30:48.966Z",
+  "session_ids": [
+    "ses_218066ca9ffezMFu4ldE8Z0Zl9"
+  ],
+  "plan_name": "miniworld-proto-align",
+  "agent": "atlas",
+  "session_origins": {
+    "ses_218066ca9ffezMFu4ldE8Z0Zl9": "direct"
+  },
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "删除 `#include \"UDPProxyServer.h\"`，添加 MiniWorld 子消息常量",
+      "session_id": "ses_1ef9ff287ffeR2ygsKyt0pKW07",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-05-10T05:36:35.129Z"
+    }
+  }
+}

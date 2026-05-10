@@ -8,14 +8,20 @@
 #include <string>
 #include <cstdint>
 #include <map>
-#include <signal.h>
+#include <csignal>
 #include "RakPeerInterface.h"
 #include "MessageIdentifiers.h"
 #include "BitStream.h"
 #include "RakNetTypes.h"
 #include "RakSleep.h"
 #include "NatPunchthroughClient.h"
-#include "UDPProxyClient.h"
+
+// MiniWorld custom UDPProxy sub-messages
+const unsigned char MW_PROXY_CLIENT_REGISTER = 0x1E;  // client → proxy: 5c 1e [GUID]
+const unsigned char MW_PROXY_HOST_REGISTER   = 0x20;  // host   → proxy: 5c 20 [GUID1] [GUID2]
+#include <miniupnpc/miniupnpc.h>
+#include <miniupnpc/upnpcommands.h>
+#include <miniupnpc/upnperrors.h>
 
 // 自定义消息ID，避免与RakNet内置ID冲突
 enum GameMessages {
@@ -33,6 +39,7 @@ struct ProgramArgs {
     std::string customGuid;     // 自定义GUID（十六进制字符串，最多16字符）
     std::string coordinatorIP;    // Coordinator服务器IP
     int coordinatorPort;          // Coordinator服务器端口
+    bool useUPnP;                 // 启用UPnP端口映射
 };
 
 // 打印使用说明
@@ -40,7 +47,7 @@ void PrintUsage(const char* progName) {
     printf("用法: %s -local_port <port> -max_clients <num> "
            "-nat_ip <ip> -nat_port <port> "
            "-target_ip <ip> -target_port <port> "
-           "[-guid <hex16>] [-coordinator_ip <ip> -coordinator_port <port>]\n", progName);
+           "[-guid <hex16>] [-coordinator_ip <ip> -coordinator_port <port>] [-upnp]\n", progName);
     printf("示例: %s -local_port 60000 -max_clients 10 "
            "-nat_ip 192.168.1.100 -nat_port 61111 "
            "-target_ip 10.0.0.50 -target_port 7000 "
@@ -60,6 +67,7 @@ bool ParseArgs(int argc, char** argv, ProgramArgs& args) {
     args.customGuid = "";  // 默认为空，表示自动生成
     args.coordinatorIP = "";
     args.coordinatorPort = 61112;
+    args.useUPnP = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -81,6 +89,8 @@ bool ParseArgs(int argc, char** argv, ProgramArgs& args) {
             args.coordinatorIP = argv[++i];
         } else if (arg == "-coordinator_port" && i + 1 < argc) {
             args.coordinatorPort = atoi(argv[++i]);
+        } else if (arg == "-upnp") {
+            args.useUPnP = true;
         } else if (arg == "-h" || arg == "--help") {
             PrintUsage(argv[0]);
             return false;
@@ -140,56 +150,100 @@ void DestroyClient(RakNet::RakPeerInterface* childPeer) {
     }
 }
 
-volatile bool g_running = true;
+// UPnP state
+static struct UPNPUrls g_upnpUrls;
+static struct IGDdatas g_upnpData;
+static struct UPNPDev* g_upnpDevlist = NULL;
+static bool g_upnpInitialized = false;
 
-void SignalHandler(int) {
-    g_running = false;
+bool AddUPnPPortMapping(int port) {
+    int error = 0;
+    printf("[UPnP] 正在发现设备...\n");
+
+    g_upnpDevlist = upnpDiscover(2000, NULL, NULL, 0, 0, 2, &error);
+    if (!g_upnpDevlist) {
+        printf("[UPnP] 发现设备失败 (错误码: %d)\n", error);
+        return false;
+    }
+
+    char lanaddr[64] = {0};
+    char wanaddr[64] = {0};
+    int igd = UPNP_GetValidIGD(g_upnpDevlist, &g_upnpUrls, &g_upnpData, lanaddr, sizeof(lanaddr), wanaddr, sizeof(wanaddr));
+    if (igd <= 0) {
+        printf("[UPnP] 未找到有效的IGD设备\n");
+        freeUPNPDevlist(g_upnpDevlist);
+        g_upnpDevlist = NULL;
+        return false;
+    }
+
+    printf("[UPnP] 本地地址: %s\n", lanaddr);
+    if (strlen(wanaddr) > 0) {
+        printf("[UPnP] WAN地址: %s\n", wanaddr);
+    }
+
+    char externalIP[16] = {0};
+    if (UPNP_GetExternalIPAddress(g_upnpUrls.controlURL, g_upnpData.first.servicetype, externalIP) == 0) {
+        printf("[UPnP] 外部IP: %s\n", externalIP);
+    }
+
+    char portStr[16];
+    snprintf(portStr, sizeof(portStr), "%d", port);
+
+    int result = UPNP_AddPortMapping(
+        g_upnpUrls.controlURL,
+        g_upnpData.first.servicetype,
+        portStr,
+        portStr,
+        lanaddr,
+        "raknet_proxy",
+        "UDP",
+        NULL,
+        "0"
+    );
+
+    if (result == 0) {
+        printf("[UPnP] 端口映射已添加 (UDP %d -> %s:%d)\n", port, lanaddr, port);
+        g_upnpInitialized = true;
+        return true;
+    } else {
+        printf("[UPnP] 端口映射失败: %s (错误码: %d)\n", strupnperror(result), result);
+        return false;
+    }
 }
 
-class ProxyClientCallback : public RakNet::UDPProxyClientResultHandler {
-public:
-    RakNet::RakPeerInterface* peer;
+void RemoveUPnPPortMapping(int port) {
+    if (!g_upnpInitialized) return;
 
-    void OnForwardingSuccess(const char *proxyIPAddress, unsigned short proxyPort,
-        RakNet::SystemAddress proxyCoordinator, RakNet::SystemAddress sourceAddress,
-        RakNet::SystemAddress targetAddress, RakNet::RakNetGUID targetGuid,
-        RakNet::UDPProxyClient *proxyClientPlugin) override {
-        printf("[UDPProxy] 转发成功: %s:%d\n", proxyIPAddress, proxyPort);
-        peer->Connect(proxyIPAddress, proxyPort, 0, 0);
+    char portStr[16];
+    snprintf(portStr, sizeof(portStr), "%d", port);
+
+    int result = UPNP_DeletePortMapping(
+        g_upnpUrls.controlURL,
+        g_upnpData.first.servicetype,
+        portStr,
+        "UDP",
+        NULL
+    );
+
+    if (result == 0) {
+        printf("[UPnP] 端口映射已删除 (UDP %d)\n", port);
+    } else {
+        printf("[UPnP] 删除端口映射失败: %s (错误码: %d)\n", strupnperror(result), result);
     }
 
-    void OnForwardingNotification(const char *proxyIPAddress, unsigned short proxyPort,
-        RakNet::SystemAddress proxyCoordinator, RakNet::SystemAddress sourceAddress,
-        RakNet::SystemAddress targetAddress, RakNet::RakNetGUID targetGuid,
-        RakNet::UDPProxyClient *proxyClientPlugin) override {
-        printf("[UDPProxy] 收到转发通知: %s:%d\n", proxyIPAddress, proxyPort);
+    FreeUPNPUrls(&g_upnpUrls);
+    if (g_upnpDevlist) {
+        freeUPNPDevlist(g_upnpDevlist);
+        g_upnpDevlist = NULL;
     }
+    g_upnpInitialized = false;
+}
 
-    void OnNoServersOnline(RakNet::SystemAddress proxyCoordinator, RakNet::SystemAddress sourceAddress,
-        RakNet::SystemAddress targetAddress, RakNet::RakNetGUID targetGuid,
-        RakNet::UDPProxyClient *proxyClientPlugin) override {
-        printf("[UDPProxy] 错误: 没有可用的代理服务器\n");
-    }
+volatile sig_atomic_t g_running = 1;
 
-    void OnRecipientNotConnected(RakNet::SystemAddress proxyCoordinator, RakNet::SystemAddress sourceAddress,
-        RakNet::SystemAddress targetAddress, RakNet::RakNetGUID targetGuid,
-        RakNet::UDPProxyClient *proxyClientPlugin) override {
-        printf("[UDPProxy] 错误: 目标未连接到Coordinator\n");
-    }
-
-    void OnAllServersBusy(RakNet::SystemAddress proxyCoordinator, RakNet::SystemAddress sourceAddress,
-        RakNet::SystemAddress targetAddress, RakNet::RakNetGUID targetGuid,
-        RakNet::UDPProxyClient *proxyClientPlugin) override {
-        printf("[UDPProxy] 错误: 所有代理服务器已满\n");
-    }
-
-    void OnForwardingInProgress(const char *proxyIPAddress, unsigned short proxyPort,
-        RakNet::SystemAddress proxyCoordinator, RakNet::SystemAddress sourceAddress,
-        RakNet::SystemAddress targetAddress, RakNet::RakNetGUID targetGuid,
-        RakNet::UDPProxyClient *proxyClientPlugin) override {
-        printf("[UDPProxy] 转发已在进行中\n");
-    }
-};
+void SignalHandler(int) {
+    g_running = 0;
+}
 
 int main(int argc, char** argv) {
     ProgramArgs args;
@@ -246,11 +300,11 @@ int main(int argc, char** argv) {
     peer->AttachPlugin(natClient);
     printf("NAT打洞客户端插件已附加\n");
 
-    RakNet::UDPProxyClient* udpProxyClient = RakNet::UDPProxyClient::GetInstance();
-    ProxyClientCallback* proxyCallback = new ProxyClientCallback();
-    proxyCallback->peer = peer;
-    udpProxyClient->SetResultHandler(proxyCallback);
-    peer->AttachPlugin(udpProxyClient);
+
+
+    if (args.useUPnP) {
+        AddUPnPPortMapping(args.localPort);
+    }
 
     RakNet::SystemAddress coordinatorAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
     if (!args.coordinatorIP.empty()) {
@@ -285,7 +339,12 @@ int main(int argc, char** argv) {
     // 多客户端连接表 (GUID → ClientContext)
     std::map<RakNet::RakNetGUID, ClientContext> clients;
 
-    signal(SIGINT, SignalHandler);
+    struct sigaction sa;
+    sa.sa_handler = SignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     printf("\n服务器运行中，按 Ctrl+C 退出...\n\n");
 
@@ -373,13 +432,24 @@ int main(int argc, char** argv) {
             }
 
             case ID_CONNECTION_REQUEST_ACCEPTED: {
-                if (strcmp(senderAddress.ToString(false), args.natServerIP.c_str()) == 0) {
-                    printf("[NAT服务器] 连接成功\n");
-                }
-                else if (!args.coordinatorIP.empty() &&
-                         strcmp(senderAddress.ToString(false), args.coordinatorIP.c_str()) == 0) {
+                if (!args.coordinatorIP.empty() &&
+                    strcmp(senderAddress.ToString(false), args.coordinatorIP.c_str()) == 0) {
                     coordinatorAddress = senderAddress;
                     printf("[Coordinator] 连接成功\n");
+
+                    // 向 Coordinator 注册: 5c 1e [raknet_proxy GUID]
+                    RakNet::BitStream bs;
+                    unsigned char header = ID_UDP_PROXY_GENERAL;
+                    unsigned char regID = MW_PROXY_CLIENT_REGISTER;
+                    bs.WriteBits(&header, 8, true);
+                    bs.WriteBits(&regID, 8, true);
+                    RakNet::RakNetGUID myGuid = peer->GetMyGUID();
+                    bs.WriteBits((const unsigned char*)&myGuid, 64, true);
+                    peer->Send(&bs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, coordinatorAddress, false);
+                    printf("[Coordinator] 已发送注册 GUID:%s\n", myGuid.ToString());
+                }
+                else if (strcmp(senderAddress.ToString(false), args.natServerIP.c_str()) == 0) {
+                    printf("[NAT服务器] 连接成功\n");
                 }
                 else if (senderAddress == expectedTargetAddr) {
                     targetServerAddress = senderAddress;
@@ -399,18 +469,7 @@ int main(int argc, char** argv) {
             }
 
             case ID_NAT_PUNCHTHROUGH_FAILED: {
-                printf("[#%d] NAT打洞失败: 目标GUID: %s\n",
-                       packetCount, packet->guid.ToString());
-                if (!args.coordinatorIP.empty() &&
-                    coordinatorAddress != RakNet::UNASSIGNED_SYSTEM_ADDRESS) {
-                    printf("[打洞失败] 尝试UDPProxy转发...\n");
-                    udpProxyClient->RequestForwarding(
-                        coordinatorAddress,
-                        RakNet::UNASSIGNED_SYSTEM_ADDRESS,
-                        packet->guid,
-                        10000
-                    );
-                }
+                printf("[打洞失败] GUID: %s\n", packet->guid.ToString());
                 break;
             }
 
@@ -431,6 +490,69 @@ int main(int argc, char** argv) {
 
             case ID_NAT_ALREADY_IN_PROGRESS: {
                 printf("[#%d] NAT打洞提示: 打洞正在进行中\n", packetCount);
+                break;
+            }
+
+            case ID_UDP_PROXY_GENERAL: {
+                if (packet->length < 3) break;
+                unsigned char subID = packet->data[1];
+
+                if (subID == MW_PROXY_CLIENT_REGISTER && packet->length >= 10) {
+                    RakNet::RakNetGUID clientGuid;
+                    memcpy(&clientGuid, packet->data + 2, 8);
+                    printf("[MiniWorld] 客户端注册 GUID:%s 来自:%s\n",
+                           clientGuid.ToString(), senderAddress.ToString(true));
+
+                    // 回发 5c 1e + raknet_proxy 自己的 GUID
+                    {
+                        RakNet::BitStream bs;
+                        unsigned char header = ID_UDP_PROXY_GENERAL;
+                        unsigned char regID = MW_PROXY_CLIENT_REGISTER;
+                        bs.WriteBits(&header, 8, true);
+                        bs.WriteBits(&regID, 8, true);
+                        RakNet::RakNetGUID myGuid = peer->GetMyGUID();
+                        bs.WriteBits((const unsigned char*)&myGuid, 64, true);
+                        peer->Send(&bs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, senderAddress, false);
+                        printf("[MiniWorld] 回发注册响应 GUID:%s\n", myGuid.ToString());
+                    }
+
+                    RakNet::RakPeerInterface* childPeer = RakNet::RakPeerInterface::GetInstance();
+                    if (childPeer == NULL) {
+                        printf("[错误] 无法创建子RakPeer实例\n");
+                        break;
+                    }
+                    childPeer->SetMyGUID(clientGuid);
+                    childPeer->SetMaximumIncomingConnections(0);
+                    RakNet::SocketDescriptor sdChild(0, 0);
+                    RakNet::StartupResult sr = childPeer->Startup(1, &sdChild, 1);
+                    if (sr != RakNet::RAKNET_STARTED) {
+                        printf("[错误] 子RakPeer启动失败: %d\n", sr);
+                        RakNet::RakPeerInterface::DestroyInstance(childPeer);
+                        break;
+                    }
+                    RakNet::ConnectionAttemptResult cr = childPeer->Connect(
+                        args.targetServerIP.c_str(), args.targetServerPort, 0, 0);
+                    if (cr != RakNet::CONNECTION_ATTEMPT_STARTED) {
+                        printf("[错误] 子RakPeer连接目标服务器失败: %d\n", cr);
+                        DestroyClient(childPeer);
+                        break;
+                    }
+                    clients[clientGuid] = ClientContext{
+                        childPeer, clientGuid, senderAddress,
+                        RakNet::UNASSIGNED_SYSTEM_ADDRESS
+                    };
+                    printf("[MiniWorld] 已分配子Peer, GUID:%s\n", clientGuid.ToString());
+                }
+                else if (subID == MW_PROXY_HOST_REGISTER && packet->length >= 18) {
+                    RakNet::RakNetGUID guid1, guid2;
+                    memcpy(&guid1, packet->data + 2, 8);
+                    memcpy(&guid2, packet->data + 10, 8);
+                    printf("[MiniWorld] 主机注册 GUID1:%s GUID2:%s 来自:%s\n",
+                           guid1.ToString(), guid2.ToString(), senderAddress.ToString(true));
+                }
+                else {
+                    printf("[MiniWorld] 未知子消息 0x%02X 来自:%s\n", subID, senderAddress.ToString(true));
+                }
                 break;
             }
 
@@ -504,13 +626,14 @@ int main(int argc, char** argv) {
     }
     clients.clear();
 
+    if (args.useUPnP) {
+        RemoveUPnPPortMapping(args.localPort);
+    }
+
     // ----- 5. 清理资源 -----
     printf("\n正在关闭服务器...\n");
-    peer->Shutdown(300);
-    delete proxyCallback;
-    RakNet::UDPProxyClient::DestroyInstance(udpProxyClient);
+    peer->Shutdown(0);
     RakNet::NatPunchthroughClient::DestroyInstance(natClient);
-    RakNet::RakPeerInterface::DestroyInstance(peer);
     printf("服务器已关闭\n");
 
     return 0;
