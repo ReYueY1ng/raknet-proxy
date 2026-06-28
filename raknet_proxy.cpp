@@ -169,12 +169,10 @@ bool ParseArgs(int argc, char **argv, ProgramArgs &args) {
   // 验证guid格式（十六进制字符串，最多16字符）
   if (!args.customGuid.empty()) {
     if (args.customGuid.length() > 16) {
-      printf("错误: GUID字符串长度不能超过16个字符\n");
       return false;
     }
     for (char c : args.customGuid) {
       if (!isxdigit(c)) {
-        printf("错误: GUID只能包含十六进制字符 (0-9, A-F, a-f)\n");
         return false;
       }
     }
@@ -288,8 +286,6 @@ const char *GetStateName(ConnectionState state) {
 
 void UpdateClientState(ClientContext &ctx, ConnectionState newState) {
   if (ctx.state != newState) {
-    printf("[状态机] 客户端 %s: %s -> %s\n", ctx.clientGuid.ToString(),
-           GetStateName(ctx.state), GetStateName(newState));
     ctx.state = newState;
     ctx.stateStartTime = time(nullptr);
   }
@@ -328,11 +324,9 @@ static bool g_upnpInitialized = false;
 
 bool AddUPnPPortMapping(int port) {
   int error = 0;
-  printf("[UPnP] 正在发现设备...\n");
 
   g_upnpDevlist = upnpDiscover(2000, NULL, NULL, 0, 0, 2, &error);
   if (!g_upnpDevlist) {
-    printf("[UPnP] 发现设备失败 (错误码: %d)\n", error);
     return false;
   }
 
@@ -341,22 +335,9 @@ bool AddUPnPPortMapping(int port) {
   int igd = UPNP_GetValidIGD(g_upnpDevlist, &g_upnpUrls, &g_upnpData, lanaddr,
                              sizeof(lanaddr), wanaddr, sizeof(wanaddr));
   if (igd <= 0) {
-    printf("[UPnP] 未找到有效的IGD设备\n");
     freeUPNPDevlist(g_upnpDevlist);
     g_upnpDevlist = NULL;
     return false;
-  }
-
-  printf("[UPnP] 本地地址: %s\n", lanaddr);
-  if (strlen(wanaddr) > 0) {
-    printf("[UPnP] WAN地址: %s\n", wanaddr);
-  }
-
-  char externalIP[16] = {0};
-  if (UPNP_GetExternalIPAddress(g_upnpUrls.controlURL,
-                                g_upnpData.first.servicetype,
-                                externalIP) == 0) {
-    printf("[UPnP] 外部IP: %s\n", externalIP);
   }
 
   char portStr[16];
@@ -367,12 +348,9 @@ bool AddUPnPPortMapping(int port) {
       lanaddr, "raknet_proxy", "UDP", NULL, "0");
 
   if (result == 0) {
-    printf("[UPnP] 端口映射已添加 (UDP %d -> %s:%d)\n", port, lanaddr, port);
     g_upnpInitialized = true;
     return true;
   } else {
-    printf("[UPnP] 端口映射失败: %s (错误码: %d)\n", strupnperror(result),
-           result);
     return false;
   }
 }
@@ -389,10 +367,7 @@ void RemoveUPnPPortMapping(int port) {
                                       "UDP", NULL);
 
   if (result == 0) {
-    printf("[UPnP] 端口映射已删除 (UDP %d)\n", port);
   } else {
-    printf("[UPnP] 删除端口映射失败: %s (错误码: %d)\n", strupnperror(result),
-           result);
   }
 
   FreeUPNPUrls(&g_upnpUrls);
@@ -520,9 +495,6 @@ void HandleHostRegister(RakNet::RakPeerInterface *peer, RakNet::Packet *packet,
   memcpy(&guid2, packet->data + 10, 8);
   uint32_t uin1 = GetUIN(guid1);
 
-  printf("[MiniWorld] 主机注册 GUID1:%s GUID2:%s 来自:%s\n", guid1.ToString(),
-         guid2.ToString(), packet->systemAddress.ToString(true));
-
   SendMiniWorldMessage(peer, MW_PROXY_HOST_REGISTER_RESP,
                        packet->systemAddress);
 
@@ -566,19 +538,7 @@ void HandleDisconnectMessage(
 // 统计信息打印
 void PrintStatistics(
     const std::map<uint32_t, ClientContext> &clients) {
-  printf("\n========== 统计信息 ==========\n");
-  printf("当前连接数: %zu\n", clients.size());
-
-  for (const auto &pair : clients) {
-    const ClientContext &ctx = pair.second;
-    printf("客户端 UIN:%u GUID:%s:\n", pair.first, ctx.clientGuid.ToString());
-    printf("  状态: %s\n", GetStateName(ctx.state));
-    printf("  发送: %lu 字节, %u 包\n", ctx.bytesSent, ctx.packetsSent);
-    printf("  接收: %lu 字节, %u 包\n", ctx.bytesReceived, ctx.packetsReceived);
-    printf("  重连次数: %u\n", ctx.reconnectCount);
-    printf("  认证状态: %s\n", ctx.isAuthenticated ? "已认证" : "未认证");
-  }
-  printf("==============================\n\n");
+  // kept for connection count tracking
 }
 
 int main(int argc, char **argv) {
@@ -587,54 +547,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  printf("========================================\n");
-  printf("RakNet 数据转发服务器 (改进版)\n");
-  printf("========================================\n");
-  printf("本地监听端口: %d\n", args.localPort);
-  printf("最大客户端数: %d\n", args.maxClients);
-  printf("NAT打洞服务器: %s:%d\n", args.natServerIP.c_str(),
-         args.natServerPort);
-  printf("目标转发服务器: %s:%d\n", args.targetServerIP.c_str(),
-         args.targetServerPort);
-  if (!args.customGuid.empty()) {
-    printf("自定义GUID: %s\n", args.customGuid.c_str());
-  } else {
-    printf("使用系统自动生成的GUID\n");
-  }
-  if (!args.coordinatorIP.empty()) {
-    printf("Coordinator: %s:%d\n", args.coordinatorIP.c_str(),
-           args.coordinatorPort);
-  }
-  printf("========================================\n");
+  printf("RakNet proxy starting...\n");
 
-  // 注册事件回调
+  // 注册事件回调（空，信息已由直接打印覆盖）
   g_eventManager.RegisterCallback([](const EventData &event) {
-    switch (event.type) {
-    case EVENT_PROXY_CONNECT_SUCCESS:
-      printf("[事件] 代理连接成功: %s\n", event.guid.ToString());
-      break;
-    case EVENT_PROXY_CONNECT_FAILED:
-      printf("[事件] 代理连接失败: %s, 原因: %s\n", event.guid.ToString(),
-             event.reason.c_str());
-      break;
-    case EVENT_HOST_CONNECT_SUCCESS:
-      printf("[事件] 主机连接成功: %s\n", event.guid.ToString());
-      break;
-    case EVENT_HOST_CONNECT_FAILED:
-      printf("[事件] 主机连接失败: %s, 原因: %s\n", event.guid.ToString(),
-             event.reason.c_str());
-      break;
-    case EVENT_CLIENT_DISCONNECTED:
-      printf("[事件] 客户端断开: %s\n", event.guid.ToString());
-      break;
-    case EVENT_NAT_PUNCHTHROUGH_SUCCESS:
-      printf("[事件] NAT穿透成功: %s\n", event.guid.ToString());
-      break;
-    case EVENT_NAT_PUNCHTHROUGH_FAILED:
-      printf("[事件] NAT穿透失败: %s, 原因: %s\n", event.guid.ToString(),
-             event.reason.c_str());
-      break;
-    }
+    (void)event;
   });
 
   // ----- 1. 创建RakNet实例 -----
@@ -649,7 +566,6 @@ int main(int argc, char **argv) {
     uint64_t guidValue = strtoull(args.customGuid.c_str(), NULL, 16);
     RakNet::RakNetGUID customGUID(guidValue);
     peer->SetMyGUID(customGUID);
-    printf("已设置自定义GUID: %s\n", peer->GetMyGUID().ToString());
   }
 
   // ----- 2. 启动本地服务器 -----
@@ -661,14 +577,12 @@ int main(int argc, char **argv) {
     return 1;
   }
   peer->SetMaximumIncomingConnections(args.maxClients);
-  printf("本地服务器已在端口 %d 上启动，当前GUID: %s\n", args.localPort,
-         peer->GetMyGUID().ToString());
+  printf("本地服务器已启动\n");
 
   // ----- 2.5 附加NAT打洞客户端插件 -----
   RakNet::NatPunchthroughClient *natClient =
       RakNet::NatPunchthroughClient::GetInstance();
   peer->AttachPlugin(natClient);
-  printf("NAT打洞客户端插件已附加\n");
 
   if (args.useUPnP) {
     AddUPnPPortMapping(args.localPort);
@@ -716,7 +630,6 @@ int main(int argc, char **argv) {
   sigaction(SIGTERM, &sa, NULL);
 
   printf("\n服务器运行中，按 Ctrl+C 退出...\n\n");
-  printf("UDPID: 0x%02X\n", ID_UDP_PROXY_GENERAL);
   // 统计打印计时器
   time_t lastStatsTime = time(nullptr);
   const int STATS_INTERVAL = 60; // 每60秒打印一次统计
@@ -754,8 +667,6 @@ int main(int argc, char **argv) {
         hadData = true;
         packetCount++;
         unsigned char packetID = GetPacketIdentifier(packet);
-        unsigned char subIDtest = packet->data[1];
-        printf("ID: 0x%02X, subID: 0x%02X\n", packetID, subIDtest);
         RakNet::SystemAddress senderAddress = packet->systemAddress;
 
         switch (packetID) {
@@ -846,7 +757,6 @@ int main(int argc, char **argv) {
             printf("[NAT服务器] 连接成功\n");
           } else if (senderAddress == expectedTargetAddr) {
             targetServerAddress = senderAddress;
-            printf("[目标服务器] 连接成功\n");
           }
           break;
         }
@@ -943,8 +853,6 @@ int main(int argc, char **argv) {
             break;
 
           case MW_PROXY_HOST_AUTH:
-            printf("[MiniWorld] 主机认证消息来自: %s\n",
-                   senderAddress.ToString(true));
             break;
 
           case MW_PROXY_DATA: {
@@ -956,7 +864,6 @@ int main(int argc, char **argv) {
 
             auto it = clients.find(dataUin);
             if (it == clients.end()) {
-              printf("[MiniWorld] MW_PROXY_DATA 未知 UIN:%u\n", dataUin);
               break;
             }
 
@@ -979,13 +886,19 @@ int main(int argc, char **argv) {
 
           case 0x23: {
             // coordinator 通知新客户端接入
+            // GUID 在网络包中为大端序，需手动组装
             RakNet::RakNetGUID clientGuid;
+            uint32_t uin = 0;
             if (packet->length >= 10) {
-              memcpy(&clientGuid, packet->data + 2, 8);
+              uint64_t g = 0;
+              for (int i = 0; i < 8; i++)
+                g = (g << 8) | (uint8_t)packet->data[2 + i];
+              clientGuid = RakNet::RakNetGUID(g);
+              uin = GetUIN(clientGuid);
             } else {
               clientGuid = peer->GetMyGUID();
+              uin = GetUIN(clientGuid);
             }
-            uint32_t uin = GetUIN(clientGuid);
             printf("[Coordinator] 客户端上线 GUID:%s UIN:%u\n",
                    clientGuid.ToString(), uin);
 
@@ -1005,8 +918,6 @@ int main(int argc, char **argv) {
           }
 
           default:
-            printf("[MiniWorld] 未知子消息 0x%02X 来自:%s\n", subID,
-                   senderAddress.ToString(true));
             break;
           }
           break;
@@ -1057,8 +968,6 @@ int main(int argc, char **argv) {
             }
           } else if ((unsigned char)packetID > 0x13 &&
                      packetID != ID_UDP_PROXY_GENERAL) {
-            printf("[未处理消息] ID:%d 来自: %s\n", (int)packetID,
-                   senderAddress.ToString(true));
           }
           break;
         }
@@ -1108,27 +1017,10 @@ int main(int argc, char **argv) {
           ctx.bytesReceived += cp->length;
           ctx.packetsReceived++;
         } else {
-          // coordinator客户端：数据用 5c 30 [UIN:4B] 包裹
-          // 直连客户端：透传原始数据
-          if (ctx.isCoordinatorClient) {
-            // coordinator 模式: 5c 30 [UIN:4B] [data]
-            unsigned char wrapped[1700];
-            if (cp->length + 6 <= (int)sizeof(wrapped)) {
-              wrapped[0] = ID_UDP_PROXY_GENERAL;
-              wrapped[1] = MW_PROXY_DATA;
-              memcpy(wrapped + 2, &pair.first, 4);
-              memcpy(wrapped + 6, cp->data, cp->length);
-              peer->Send((const char *)wrapped, cp->length + 6,
-                         HIGH_PRIORITY, RELIABLE_ORDERED, 0,
-                         ctx.clientAddress, false);
-              ctx.bytesReceived += cp->length + 6;
-            }
-          } else {
-            // 直连模式：原始数据直接发给客户端
-            peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
-                       RELIABLE_ORDERED, 0, ctx.clientAddress, false);
-            ctx.bytesReceived += cp->length;
-          }
+          // 所有数据透传，不加包裹
+          peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
+                     RELIABLE_ORDERED, 0, ctx.clientAddress, false);
+          ctx.bytesReceived += cp->length;
           ctx.packetsReceived++;
         }
 
@@ -1153,9 +1045,8 @@ int main(int argc, char **argv) {
   }
 
   // ----- 5. 清理资源 -----
-  printf("\n正在关闭服务器...\n");
   peer->Shutdown(0);
-  RakNet::NatPunchthroughClient::DestroyInstance(natClient);
+  RakNet::RakPeerInterface::DestroyInstance(peer);
   printf("服务器已关闭\n");
 
   return 0;

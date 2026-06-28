@@ -42,7 +42,8 @@ $CXX -O2 -o "$OUTPUT" \
     libminiupnpc.a \
     -I "$RAKNET_SRC" \
     -I "$MINIUPNPC_DIR" \
-    -lpthread -lstdc++ -std=c++11
+    -lpthread -lstdc++ -std=c++11 \
+    -DPREALLOCATE_LARGE_MESSAGES=1 # 非 PREALLOCATE 路径下，分片 Insert 追加到列表末尾，重组按列表顺序拼接，而不是按 splitPacketIndex，导致重组后的数据顺序错乱，proxy 把乱序数据转发给 server，PREALLOCATE_LARGE_MESSAGES=1 路径是正确的
 
 echo "[build] Cleaning up..."
 rm -f $OBJ_FILES libminiupnpc.a
