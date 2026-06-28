@@ -720,6 +720,17 @@ int main(int argc, char **argv) {
               ++it;
             }
           }
+          // 重连 NAT / Coordinator
+          if (coordinatorAddress != RakNet::UNASSIGNED_SYSTEM_ADDRESS &&
+              senderAddress == coordinatorAddress) {
+            coordinatorAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
+            printf("[Coordinator] 断开，正在重连...\n");
+            peer->Connect(args.coordinatorIP.c_str(), args.coordinatorPort, 0, 0);
+          }
+          if (strcmp(senderAddress.ToString(false), args.natServerIP.c_str()) == 0) {
+            printf("[NAT] 断开，正在重连...\n");
+            peer->Connect(args.natServerIP.c_str(), args.natServerPort, 0, 0);
+          }
           break;
         }
 
@@ -736,6 +747,17 @@ int main(int argc, char **argv) {
             } else {
               ++it;
             }
+          }
+          // 重连 NAT / Coordinator
+          if (coordinatorAddress != RakNet::UNASSIGNED_SYSTEM_ADDRESS &&
+              senderAddress == coordinatorAddress) {
+            coordinatorAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
+            printf("[Coordinator] 断开，正在重连...\n");
+            peer->Connect(args.coordinatorIP.c_str(), args.coordinatorPort, 0, 0);
+          }
+          if (strcmp(senderAddress.ToString(false), args.natServerIP.c_str()) == 0) {
+            printf("[NAT] 断开，正在重连...\n");
+            peer->Connect(args.natServerIP.c_str(), args.natServerPort, 0, 0);
           }
           break;
         }
