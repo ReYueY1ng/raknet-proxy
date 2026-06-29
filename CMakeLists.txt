@@ -29,11 +29,13 @@ target_include_directories(miniupnpc PUBLIC ${MINIUPNPC_DIR} ${RAKNET_SRC_DIR})
 # ── RakNet (static library) ──
 # RakNet's CMakeLists.txt requires CMake < 2.6, not compatible with modern CMake
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+# PREALLOCATE_LARGE_MESSAGES must be set globally — the #if checks are in
+# RakNet's ReliabilityLayer.h/.cpp which compile as part of RakNetLibStatic.
+add_compile_definitions(PREALLOCATE_LARGE_MESSAGES=1)
 add_subdirectory(RakNet RakNet_build)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # ── Proxy executable ──
 add_executable(raknet_proxy raknet_proxy.cpp)
 target_include_directories(raknet_proxy PRIVATE ${RAKNET_SRC_DIR} ${MINIUPNPC_DIR})
-target_compile_definitions(raknet_proxy PRIVATE PREALLOCATE_LARGE_MESSAGES=1)
 target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc pthread)
