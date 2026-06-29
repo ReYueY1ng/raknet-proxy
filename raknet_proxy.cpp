@@ -1027,11 +1027,13 @@ int main(int argc, char **argv) {
           ctx.packetsReceived++;
         } else if (id == ID_CONNECTION_ATTEMPT_FAILED) {
           printf("[错误] 子Peer连接目标服务器失败 UIN:%u\n", pair.first);
+          ctx.childPeer->DeallocatePacket(cp);
           DestroyClient(ctx.childPeer);
           ctx.childPeer = NULL;
           g_eventManager.EmitEvent(EVENT_HOST_CONNECT_FAILED,
                                    ctx.clientGuid, ctx.clientAddress,
                                    "连接目标服务器失败");
+          continue;
         } else if (id == ID_NEW_INCOMING_CONNECTION) {
           printf("[子Peer] 目标服务器接受连接 UIN:%u\n", pair.first);
           peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
@@ -1040,12 +1042,16 @@ int main(int argc, char **argv) {
           ctx.packetsReceived++;
         } else if (id == ID_DISCONNECTION_NOTIFICATION) {
           printf("[子Peer] 目标服务器主动断开连接 UIN:%u\n", pair.first);
+          ctx.childPeer->DeallocatePacket(cp);
           DestroyClient(ctx.childPeer);
           ctx.childPeer = NULL;
+          continue;
         } else if (id == ID_CONNECTION_LOST) {
           printf("[子Peer] 目标服务器连接丢失 UIN:%u\n", pair.first);
+          ctx.childPeer->DeallocatePacket(cp);
           DestroyClient(ctx.childPeer);
           ctx.childPeer = NULL;
+          continue;
         } else {
           // 所有数据透传，不加包裹
           peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
