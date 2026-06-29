@@ -1040,14 +1040,10 @@ int main(int argc, char **argv) {
           ctx.packetsReceived++;
         } else if (id == ID_DISCONNECTION_NOTIFICATION) {
           printf("[子Peer] 目标服务器主动断开连接 UIN:%u\n", pair.first);
-          peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
-                     RELIABLE_ORDERED, 0, ctx.clientAddress, false);
           DestroyClient(ctx.childPeer);
           ctx.childPeer = NULL;
         } else if (id == ID_CONNECTION_LOST) {
           printf("[子Peer] 目标服务器连接丢失 UIN:%u\n", pair.first);
-          peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
-                     RELIABLE_ORDERED, 0, ctx.clientAddress, false);
           DestroyClient(ctx.childPeer);
           ctx.childPeer = NULL;
         } else {
