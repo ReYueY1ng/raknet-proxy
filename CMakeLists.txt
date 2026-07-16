@@ -4,6 +4,12 @@ project(raknet-proxy C CXX)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# AddressSanitizer for pinpointing heap buffer overflows (Debug builds only)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  add_compile_options(-fsanitize=address -g -O1 -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address)
+endif()
+
 # Apply patches to RakNet/Source before building
 set(RAKNET_SRC_DIR "${CMAKE_SOURCE_DIR}/RakNet/Source")
 file(COPY ${CMAKE_SOURCE_DIR}/patch/ DESTINATION ${RAKNET_SRC_DIR})

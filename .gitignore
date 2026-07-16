@@ -67,4 +67,16 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Packet captures
+*.pcapng
+*.pcap
+
+# Backup / old source files
+*_old.cpp
+
+# opencode working directory
+.omo/
+
+# Compiled binary
 raknet_proxy

@@ -19,7 +19,6 @@
 #include <csignal>
 #include <cstdint>
 #include <ctime>
-#include <functional>
 #include <map>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,14 +43,18 @@ const unsigned char MW_PROXY_PING = 0x32; // ping
 const unsigned char MW_PROXY_PONG = 0x34; // pong
 const unsigned char MW_PROXY_DISCONNECT = 0x36; // disconnect notify
 
+// 常量定义
+static const unsigned char INVALID_PACKET_ID = 0xFF;
+static const int SHUTDOWN_TIMEOUT_MS = 300;
+static const int UPNP_DISCOVER_TIMEOUT_MS = 2000;
+static const int HOST_CONNECT_TIMEOUT_SEC = 20;
+static const unsigned char MW_PROXY_CLIENT_ONLINE = 0x23;
+static const unsigned char RAKNET_PACKET_ID_BOUNDARY = 0x13;
+static const int POLL_SLEEP_MS = 30;
+
 #include <miniupnpc/miniupnpc.h>
 #include <miniupnpc/upnpcommands.h>
 #include <miniupnpc/upnperrors.h>
-
-// 自定义消息ID，避免与RakNet内置ID冲突
-enum GameMessages {
-  ID_USER_DATA = ID_USER_PACKET_ENUM + 1,
-};
 
 // 连接状态枚举 (基于逆向分析)
 enum ConnectionState {
@@ -64,30 +67,7 @@ enum ConnectionState {
   STATE_CONNECTED = 6,        // 已连接成功
 };
 
-// 事件类型枚举
-enum EventType {
-  EVENT_PROXY_CONNECT_SUCCESS,    // 代理连接成功
-  EVENT_PROXY_CONNECT_FAILED,     // 代理连接失败
-  EVENT_HOST_CONNECT_SUCCESS,     // 主机连接成功
-  EVENT_HOST_CONNECT_FAILED,      // 主机连接失败
-  EVENT_CLIENT_DISCONNECTED,      // 客户端断开连接
-  EVENT_NAT_PUNCHTHROUGH_SUCCESS, // NAT穿透成功
-  EVENT_NAT_PUNCHTHROUGH_FAILED,  // NAT穿透失败
-};
-
-// 事件数据结构
-struct EventData {
-  EventType type;
-  RakNet::RakNetGUID guid;
-  RakNet::SystemAddress address;
-  std::string reason;
-  time_t timestamp;
-};
-
-// 事件回调函数类型
-using EventCallback = std::function<void(const EventData &)>;
-
-// 命令行参数结构
+// 连接状态枚举 (基于逆向分析)
 struct ProgramArgs {
   int localPort;              // 本地服务器监听端口
   int maxClients;             // 本地服务器最大连接数
@@ -183,7 +163,7 @@ bool ParseArgs(int argc, char **argv, ProgramArgs &args) {
 
 unsigned char GetPacketIdentifier(RakNet::Packet *p) {
   if (p == 0)
-    return 255;
+    return INVALID_PACKET_ID;
 
   if ((unsigned char)p->data[0] == ID_TIMESTAMP) {
     RakAssert(p->length > sizeof(RakNet::MessageID) + sizeof(RakNet::Time));
@@ -201,89 +181,22 @@ struct ClientContext {
   RakNet::SystemAddress clientAddress;
   RakNet::SystemAddress targetAddress;
 
-  // 标志位
-  bool isCoordinatorClient; // 通过 coordinator 接入的客户端
-
-  // 状态管理
   ConnectionState state;
-  time_t stateStartTime;      // 状态开始时间
-  time_t lastActivityTime;    // 最后活动时间
-  time_t proxyConnectTimeout; // 代理连接超时时间
-  time_t hostConnectTimeout;  // 主机连接超时时间
+  time_t stateStartTime;     // 状态开始时间
+  time_t hostConnectTimeout; // 主机连接超时时间
 
-  // 统计信息
   uint64_t bytesSent;
   uint64_t bytesReceived;
   uint32_t packetsSent;
   uint32_t packetsReceived;
-  uint32_t reconnectCount;
-
-  // 认证信息
-  bool isAuthenticated;
-  std::string authData;
 
   ClientContext()
-      : childPeer(nullptr), uin(0), isCoordinatorClient(false),
-        state(STATE_DISCONNECTED), stateStartTime(0),
-        lastActivityTime(0), proxyConnectTimeout(0), hostConnectTimeout(0),
-        bytesSent(0), bytesReceived(0), packetsSent(0), packetsReceived(0),
-        reconnectCount(0), isAuthenticated(false) {}
+      : childPeer(nullptr), uin(0), state(STATE_DISCONNECTED),
+        stateStartTime(0), hostConnectTimeout(0), bytesSent(0),
+        bytesReceived(0), packetsSent(0), packetsReceived(0) {}
 };
-
-// 事件管理器类
-class EventManager {
-private:
-  std::vector<EventCallback> callbacks;
-
-public:
-  void RegisterCallback(EventCallback callback) {
-    callbacks.push_back(callback);
-  }
-
-  void EmitEvent(const EventData &event) {
-    for (auto &callback : callbacks) {
-      callback(event);
-    }
-  }
-
-  void EmitEvent(EventType type, const RakNet::RakNetGUID &guid,
-                 const RakNet::SystemAddress &address,
-                 const std::string &reason = "") {
-    EventData event;
-    event.type = type;
-    event.guid = guid;
-    event.address = address;
-    event.reason = reason;
-    event.timestamp = time(nullptr);
-    EmitEvent(event);
-  }
-};
-
-// 全局事件管理器
-static EventManager g_eventManager;
 
 // 状态管理函数
-const char *GetStateName(ConnectionState state) {
-  switch (state) {
-  case STATE_DISCONNECTED:
-    return "DISCONNECTED";
-  case STATE_PUNCH_CONNECTING:
-    return "PUNCH_CONNECTING";
-  case STATE_PUNCH_CONNECTED:
-    return "PUNCH_CONNECTED";
-  case STATE_HOST_CONNECTING:
-    return "HOST_CONNECTING";
-  case STATE_PROXY_CONNECTING:
-    return "PROXY_CONNECTING";
-  case STATE_PROXY_HANDSHAKE:
-    return "PROXY_HANDSHAKE";
-  case STATE_CONNECTED:
-    return "CONNECTED";
-  default:
-    return "UNKNOWN";
-  }
-}
-
 void UpdateClientState(ClientContext &ctx, ConnectionState newState) {
   if (ctx.state != newState) {
     ctx.state = newState;
@@ -292,13 +205,6 @@ void UpdateClientState(ClientContext &ctx, ConnectionState newState) {
 }
 
 bool CheckTimeout(ClientContext &ctx, time_t currentTime) {
-  // 检查代理连接超时 (15秒)
-  if (ctx.state == STATE_PROXY_CONNECTING && ctx.proxyConnectTimeout > 0 &&
-      currentTime > ctx.proxyConnectTimeout) {
-    printf("[超时] 客户端 %s 代理连接超时\n", ctx.clientGuid.ToString());
-    return true;
-  }
-
   // 检查主机连接超时 (20秒)
   if (ctx.state == STATE_HOST_CONNECTING && ctx.hostConnectTimeout > 0 &&
       currentTime > ctx.hostConnectTimeout) {
@@ -311,7 +217,7 @@ bool CheckTimeout(ClientContext &ctx, time_t currentTime) {
 
 void DestroyClient(RakNet::RakPeerInterface *childPeer) {
   if (childPeer) {
-    childPeer->Shutdown(300);
+    childPeer->Shutdown(SHUTDOWN_TIMEOUT_MS);
     RakNet::RakPeerInterface::DestroyInstance(childPeer);
   }
 }
@@ -325,7 +231,7 @@ static bool g_upnpInitialized = false;
 bool AddUPnPPortMapping(int port) {
   int error = 0;
 
-  g_upnpDevlist = upnpDiscover(2000, NULL, NULL, 0, 0, 2, &error);
+  g_upnpDevlist = upnpDiscover(UPNP_DISCOVER_TIMEOUT_MS, NULL, NULL, 0, 0, 2, &error);
   if (!g_upnpDevlist) {
     return false;
   }
@@ -351,6 +257,11 @@ bool AddUPnPPortMapping(int port) {
     g_upnpInitialized = true;
     return true;
   } else {
+    FreeUPNPUrls(&g_upnpUrls);
+    if (g_upnpDevlist) {
+      freeUPNPDevlist(g_upnpDevlist);
+      g_upnpDevlist = NULL;
+    }
     return false;
   }
 }
@@ -365,10 +276,6 @@ void RemoveUPnPPortMapping(int port) {
   int result = UPNP_DeletePortMapping(g_upnpUrls.controlURL,
                                       g_upnpData.first.servicetype, portStr,
                                       "UDP", NULL);
-
-  if (result == 0) {
-  } else {
-  }
 
   FreeUPNPUrls(&g_upnpUrls);
   if (g_upnpDevlist) {
@@ -385,6 +292,14 @@ void SignalHandler(int) { g_running = 0; }
 // 从 RakNetGUID 提取 UIN（低32位）
 inline uint32_t GetUIN(const RakNet::RakNetGUID &guid) {
   return (uint32_t)(guid.g & 0xFFFFFFFF);
+}
+
+// 从网络包中读取大端序 GUID（RakNet 线上格式为大端序）
+static RakNet::RakNetGUID ReadBigEndianGuid(const unsigned char *data) {
+  uint64_t g = 0;
+  for (int i = 0; i < 8; i++)
+    g = (g << 8) | (uint8_t)data[i];
+  return RakNet::RakNetGUID(g);
 }
 
 // 发送MiniWorld子消息
@@ -452,8 +367,7 @@ void HandleClientRegister(
   if (packet->length < 10)
     return;
 
-  RakNet::RakNetGUID guid;
-  memcpy(&guid, packet->data + 2, 8);
+  RakNet::RakNetGUID guid = ReadBigEndianGuid(packet->data + 2);
   uint32_t uin = GetUIN(guid);
 
   printf("[MiniWorld] 客户端注册 GUID:%s UIN:%u 来自:%s\n", guid.ToString(),
@@ -470,8 +384,6 @@ void HandleClientRegister(
   ctx.targetAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
   ctx.state = STATE_PROXY_CONNECTING;
   ctx.stateStartTime = time(nullptr);
-  ctx.lastActivityTime = time(nullptr);
-  ctx.isCoordinatorClient = false;
 
   if (!CreateChildPeer(args, ctx, guid)) {
     return;
@@ -479,8 +391,6 @@ void HandleClientRegister(
 
   clients[uin] = ctx;
   printf("[MiniWorld] 已分配子Peer, UIN:%u, 状态: PROXY_CONNECTING\n", uin);
-  g_eventManager.EmitEvent(EVENT_PROXY_CONNECT_SUCCESS, guid,
-                           packet->systemAddress);
 }
 
 // 处理主机注册消息
@@ -490,9 +400,8 @@ void HandleHostRegister(RakNet::RakPeerInterface *peer, RakNet::Packet *packet,
   if (packet->length < 18)
     return;
 
-  RakNet::RakNetGUID guid1, guid2;
-  memcpy(&guid1, packet->data + 2, 8);
-  memcpy(&guid2, packet->data + 10, 8);
+  RakNet::RakNetGUID guid1 = ReadBigEndianGuid(packet->data + 2);
+  RakNet::RakNetGUID guid2 = ReadBigEndianGuid(packet->data + 10);
   uint32_t uin1 = GetUIN(guid1);
 
   SendMiniWorldMessage(peer, MW_PROXY_HOST_REGISTER_RESP,
@@ -502,7 +411,7 @@ void HandleHostRegister(RakNet::RakPeerInterface *peer, RakNet::Packet *packet,
   if (it != clients.end()) {
     it->second.targetAddress = packet->systemAddress;
     UpdateClientState(it->second, STATE_HOST_CONNECTING);
-    it->second.hostConnectTimeout = time(nullptr) + 20;
+    it->second.hostConnectTimeout = time(nullptr) + HOST_CONNECT_TIMEOUT_SEC;
     printf("[MiniWorld] 客户端 UIN:%u 开始连接主机\n", uin1);
   }
 }
@@ -512,7 +421,6 @@ void HandlePingMessage(RakNet::RakPeerInterface *peer, RakNet::Packet *packet,
                        std::map<uint32_t, ClientContext> &clients) {
   for (auto &pair : clients) {
     if (pair.second.clientAddress == packet->systemAddress) {
-      pair.second.lastActivityTime = time(nullptr);
       SendMiniWorldMessage(peer, MW_PROXY_PONG, packet->systemAddress);
       break;
     }
@@ -527,18 +435,11 @@ void HandleDisconnectMessage(
     if (it->second.clientAddress == packet->systemAddress) {
       printf("[MiniWorld] 客户端 UIN:%u 请求断开连接\n", it->first);
       DestroyClient(it->second.childPeer);
-      g_eventManager.EmitEvent(EVENT_CLIENT_DISCONNECTED, it->second.clientGuid,
-                               packet->systemAddress);
+      it->second.childPeer = nullptr;
       clients.erase(it);
       break;
     }
   }
-}
-
-// 统计信息打印
-void PrintStatistics(
-    const std::map<uint32_t, ClientContext> &clients) {
-  // kept for connection count tracking
 }
 
 int main(int argc, char **argv) {
@@ -548,11 +449,6 @@ int main(int argc, char **argv) {
   }
 
   printf("RakNet proxy starting...\n");
-
-  // 注册事件回调（空，信息已由直接打印覆盖）
-  g_eventManager.RegisterCallback([](const EventData &event) {
-    (void)event;
-  });
 
   // ----- 1. 创建RakNet实例 -----
   RakNet::RakPeerInterface *peer = RakNet::RakPeerInterface::GetInstance();
@@ -614,8 +510,6 @@ int main(int argc, char **argv) {
     printf("连接NAT打洞服务器的请求已发送\n");
   }
 
-  // 用于追踪与目标服务器的连接地址
-  RakNet::SystemAddress targetServerAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
   // 目标服务器的预期地址（IP:端口），用于精确匹配
   RakNet::SystemAddress expectedTargetAddr(args.targetServerIP.c_str(),
                                            args.targetServerPort);
@@ -630,9 +524,6 @@ int main(int argc, char **argv) {
   sigaction(SIGTERM, &sa, NULL);
 
   printf("\n服务器运行中，按 Ctrl+C 退出...\n\n");
-  // 统计打印计时器
-  time_t lastStatsTime = time(nullptr);
-  const int STATS_INTERVAL = 60; // 每60秒打印一次统计
 
   // ----- 4. 主循环：处理网络事件 (N+1 peers) -----
   int packetCount = 0;
@@ -645,19 +536,11 @@ int main(int argc, char **argv) {
       if (CheckTimeout(it->second, currentTime)) {
         printf("[超时] 客户端 UIN:%u 连接超时，断开连接\n", it->first);
         DestroyClient(it->second.childPeer);
-        g_eventManager.EmitEvent(EVENT_PROXY_CONNECT_FAILED,
-                                 it->second.clientGuid,
-                                 it->second.clientAddress, "连接超时");
+        it->second.childPeer = nullptr;
         it = clients.erase(it);
       } else {
         ++it;
       }
-    }
-
-    // 定期打印统计信息
-    if (currentTime - lastStatsTime >= STATS_INTERVAL) {
-      PrintStatistics(clients);
-      lastStatsTime = currentTime;
     }
 
     // 1. Poll main peer
@@ -695,14 +578,10 @@ int main(int argc, char **argv) {
           ctx.targetAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
           ctx.state = STATE_PROXY_CONNECTING;
           ctx.stateStartTime = time(nullptr);
-          ctx.lastActivityTime = time(nullptr);
-          ctx.isCoordinatorClient = false;
 
           if (CreateChildPeer(args, ctx, clientGuid)) {
             clients[uin] = ctx;
             printf("[客户端] 直连, 已分配子Peer UIN:%u\n", uin);
-            g_eventManager.EmitEvent(EVENT_PROXY_CONNECT_SUCCESS, clientGuid,
-                                     senderAddress);
           }
           break;
         }
@@ -713,8 +592,7 @@ int main(int argc, char **argv) {
             if (it->second.clientAddress == senderAddress) {
               printf("[客户端] UIN:%u 断开\n", it->first);
               DestroyClient(it->second.childPeer);
-              g_eventManager.EmitEvent(EVENT_CLIENT_DISCONNECTED,
-                                       it->second.clientGuid, senderAddress);
+              it->second.childPeer = nullptr;
               it = clients.erase(it);
             } else {
               ++it;
@@ -741,8 +619,7 @@ int main(int argc, char **argv) {
                 it->second.targetAddress == senderAddress) {
               printf("[客户端] UIN:%u 丢失\n", it->first);
               DestroyClient(it->second.childPeer);
-              g_eventManager.EmitEvent(EVENT_CLIENT_DISCONNECTED,
-                                       it->second.clientGuid, senderAddress);
+              it->second.childPeer = nullptr;
               it = clients.erase(it);
             } else {
               ++it;
@@ -777,8 +654,6 @@ int main(int argc, char **argv) {
           } else if (strcmp(senderAddress.ToString(false),
                             args.natServerIP.c_str()) == 0) {
             printf("[NAT服务器] 连接成功\n");
-          } else if (senderAddress == expectedTargetAddr) {
-            targetServerAddress = senderAddress;
           }
           break;
         }
@@ -791,8 +666,6 @@ int main(int argc, char **argv) {
         case ID_NAT_PUNCHTHROUGH_SUCCEEDED: {
           uint32_t uin = GetUIN(packet->guid);
           printf("[打洞成功] GUID:%s UIN:%u\n", packet->guid.ToString(), uin);
-          g_eventManager.EmitEvent(EVENT_NAT_PUNCHTHROUGH_SUCCESS, packet->guid,
-                                   senderAddress);
 
           auto it = clients.find(uin);
           if (it != clients.end()) {
@@ -803,8 +676,6 @@ int main(int argc, char **argv) {
 
         case ID_NAT_PUNCHTHROUGH_FAILED: {
           printf("[打洞失败] GUID: %s\n", packet->guid.ToString());
-          g_eventManager.EmitEvent(EVENT_NAT_PUNCHTHROUGH_FAILED, packet->guid,
-                                   senderAddress, "NAT穿透失败");
           break;
         }
 
@@ -861,17 +732,6 @@ int main(int argc, char **argv) {
             break;
 
           case MW_PROXY_CLIENT_AUTH:
-            printf("[MiniWorld] 客户端认证消息来自: %s\n",
-                   senderAddress.ToString(true));
-            for (auto &pair : clients) {
-              if (pair.second.clientAddress == senderAddress) {
-                pair.second.isAuthenticated = true;
-                pair.second.authData = std::string(
-                    (const char *)(packet->data + 2), packet->length - 2);
-                printf("[MiniWorld] 客户端 UIN:%u 认证成功\n", pair.first);
-                break;
-              }
-            }
             break;
 
           case MW_PROXY_HOST_AUTH:
@@ -906,16 +766,13 @@ int main(int argc, char **argv) {
             break;
           }
 
-          case 0x23: {
+          case MW_PROXY_CLIENT_ONLINE: {
             // coordinator 通知新客户端接入
             // GUID 在网络包中为大端序，需手动组装
             RakNet::RakNetGUID clientGuid;
             uint32_t uin = 0;
             if (packet->length >= 10) {
-              uint64_t g = 0;
-              for (int i = 0; i < 8; i++)
-                g = (g << 8) | (uint8_t)packet->data[2 + i];
-              clientGuid = RakNet::RakNetGUID(g);
+              clientGuid = ReadBigEndianGuid(packet->data + 2);
               uin = GetUIN(clientGuid);
             } else {
               clientGuid = peer->GetMyGUID();
@@ -930,7 +787,6 @@ int main(int argc, char **argv) {
             ctx.clientAddress = senderAddress;
             ctx.targetAddress = RakNet::UNASSIGNED_SYSTEM_ADDRESS;
             ctx.state = STATE_PROXY_CONNECTING;
-            ctx.isCoordinatorClient = true;
 
             if (CreateChildPeer(args, ctx, clientGuid)) {
               clients[uin] = ctx;
@@ -988,8 +844,6 @@ int main(int argc, char **argv) {
                 ctx->packetsSent++;
               }
             }
-          } else if ((unsigned char)packetID > 0x13 &&
-                     packetID != ID_UDP_PROXY_GENERAL) {
           }
           break;
         }
@@ -1013,26 +867,21 @@ int main(int argc, char **argv) {
         if (id == ID_CONNECTION_REQUEST_ACCEPTED) {
           ctx.targetAddress = cp->systemAddress;
           UpdateClientState(ctx, STATE_CONNECTED);
-          ctx.proxyConnectTimeout = 0;
           ctx.hostConnectTimeout = 0;
           printf("[子Peer] 目标服务器连接成功 UIN:%u, 状态: CONNECTED\n",
                  pair.first);
-          g_eventManager.EmitEvent(EVENT_HOST_CONNECT_SUCCESS,
-                                   ctx.clientGuid, cp->systemAddress);
 
           // 透传目标服务器的系统消息给客户端/coordinator
           peer->Send((const char *)(cp->data), cp->length, HIGH_PRIORITY,
                      RELIABLE_ORDERED, 0, ctx.clientAddress, false);
           ctx.bytesReceived += cp->length;
           ctx.packetsReceived++;
+          ctx.childPeer->DeallocatePacket(cp);
         } else if (id == ID_CONNECTION_ATTEMPT_FAILED) {
           printf("[错误] 子Peer连接目标服务器失败 UIN:%u\n", pair.first);
           ctx.childPeer->DeallocatePacket(cp);
           DestroyClient(ctx.childPeer);
           ctx.childPeer = NULL;
-          g_eventManager.EmitEvent(EVENT_HOST_CONNECT_FAILED,
-                                   ctx.clientGuid, ctx.clientAddress,
-                                   "连接目标服务器失败");
           continue;
         } else if (id == ID_NEW_INCOMING_CONNECTION) {
           printf("[子Peer] 目标服务器接受连接 UIN:%u\n", pair.first);
@@ -1040,6 +889,7 @@ int main(int argc, char **argv) {
                      RELIABLE_ORDERED, 0, ctx.clientAddress, false);
           ctx.bytesReceived += cp->length;
           ctx.packetsReceived++;
+          ctx.childPeer->DeallocatePacket(cp);
         } else if (id == ID_DISCONNECTION_NOTIFICATION) {
           printf("[子Peer] 目标服务器主动断开连接 UIN:%u\n", pair.first);
           ctx.childPeer->DeallocatePacket(cp);
@@ -1058,14 +908,13 @@ int main(int argc, char **argv) {
                      RELIABLE_ORDERED, 0, ctx.clientAddress, false);
           ctx.bytesReceived += cp->length;
           ctx.packetsReceived++;
+          ctx.childPeer->DeallocatePacket(cp);
         }
-
-        ctx.childPeer->DeallocatePacket(cp);
       }
     }
 
     if (!hadData) {
-      RakSleep(30);
+      RakSleep(POLL_SLEEP_MS);
     }
   }
 
