@@ -131,15 +131,18 @@ jobs:
 
       - name: Rename binaries
         run: |
-          mv artifacts/raknet_proxy-linux-amd64/raknet_proxy artifacts/raknet_proxy-linux-amd64
-          mv artifacts/raknet_proxy-linux-arm64/raknet_proxy artifacts/raknet_proxy-linux-arm64
-          mv artifacts/raknet_proxy-windows-amd64/raknet_proxy.exe artifacts/raknet_proxy-windows-amd64.exe 2>/dev/null || mv artifacts/raknet_proxy-windows-amd64/Release/raknet_proxy.exe artifacts/raknet_proxy-windows-amd64.exe 2>/dev/null || true
+          mkdir -p dist
+          cp artifacts/raknet_proxy-linux-amd64/raknet_proxy dist/raknet_proxy-linux-amd64
+          cp artifacts/raknet_proxy-linux-arm64/raknet_proxy dist/raknet_proxy-linux-arm64
+          cp artifacts/raknet_proxy-windows-amd64/raknet_proxy.exe dist/raknet_proxy-windows-amd64.exe 2>/dev/null \
+            || cp artifacts/raknet_proxy-windows-amd64/Release/raknet_proxy.exe dist/raknet_proxy-windows-amd64.exe 2>/dev/null \
+            || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/raknet_proxy-linux-amd64
-            artifacts/raknet_proxy-linux-arm64
-            artifacts/raknet_proxy-windows-amd64.exe
+            dist/raknet_proxy-linux-amd64
+            dist/raknet_proxy-linux-arm64
+            dist/raknet_proxy-windows-amd64.exe
           generate_release_notes: true
