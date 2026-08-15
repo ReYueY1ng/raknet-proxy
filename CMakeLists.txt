@@ -14,6 +14,12 @@ endif()
 set(RAKNET_SRC_DIR "${CMAKE_SOURCE_DIR}/RakNet/Source")
 file(COPY ${CMAKE_SOURCE_DIR}/patch/ DESTINATION ${RAKNET_SRC_DIR})
 
+# Apply miniupnpc patches
+set(MINIUPNPC_PATCH_DIR "${CMAKE_SOURCE_DIR}/RakNet/DependentExtensions/miniupnpc-1.5")
+if(EXISTS "${CMAKE_SOURCE_DIR}/patch/minissdpc.c")
+  file(COPY "${CMAKE_SOURCE_DIR}/patch/minissdpc.c" DESTINATION "${MINIUPNPC_PATCH_DIR}")
+endif()
+
 # ── MiniUPnPc ──
 # Try to use system-installed miniupnpc first, fall back to bundled version
 find_library(MINIUPNPC_LIBRARY miniupnpc)
@@ -42,7 +48,13 @@ else()
       ${MINIUPNPC_DIR}/upnpreplyparse.c
   )
   add_library(miniupnpc STATIC ${MINIUPNPC_SOURCES})
-  target_include_directories(miniupnpc PUBLIC ${MINIUPNPC_DIR} ${RAKNET_SRC_DIR})
+  # Create miniupnpc/ subdirectory in build dir for #include <miniupnpc/...> paths
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include/miniupnpc")
+  foreach(HEADER ${MINIUPNPC_DIR}/*.h)
+    get_filename_component(HEADER_NAME ${HEADER} NAME)
+    configure_file(${HEADER} "${CMAKE_BINARY_DIR}/include/miniupnpc/${HEADER_NAME}" COPYONLY)
+  endforeach()
+  target_include_directories(miniupnpc PUBLIC ${CMAKE_BINARY_DIR}/include ${RAKNET_SRC_DIR})
   if(WIN32)
     target_compile_definitions(miniupnpc PRIVATE _CRT_SECURE_NO_WARNINGS MINIUPNP_STATICLIB)
   endif()
@@ -67,5 +79,5 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # ── Proxy executable ──
 add_executable(raknet_proxy raknet_proxy.cpp)
-target_include_directories(raknet_proxy PRIVATE ${RAKNET_SRC_DIR} ${MINIUPNPC_DIR} ${CMAKE_BINARY_DIR}/miniupnpc_symlink)
+target_include_directories(raknet_proxy PRIVATE ${RAKNET_SRC_DIR} ${CMAKE_BINARY_DIR}/include)
 target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc pthread)
