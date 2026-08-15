@@ -21,7 +21,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/patch/minissdpc.c")
 endif()
 
 # ── MiniUPnPc ──
-# Try to use system-installed miniupnpc first, fall back to bundled version
+# Use system-installed miniupnpc (newer API compatible)
 find_library(MINIUPNPC_LIBRARY miniupnpc)
 find_path(MINIUPNPC_INCLUDE_DIR miniupnpc/miniupnpc.h)
 
@@ -33,31 +33,7 @@ if(MINIUPNPC_LIBRARY AND MINIUPNPC_INCLUDE_DIR)
     INTERFACE_LINK_LIBRARIES "${MINIUPNPC_LIBRARY}"
   )
 else()
-  message(STATUS "System miniupnpc not found, building from source")
-  set(MINIUPNPC_DIR "${CMAKE_SOURCE_DIR}/RakNet/DependentExtensions/miniupnpc-1.5")
-  set(MINIUPNPC_SOURCES
-      ${MINIUPNPC_DIR}/connecthostport.c
-      ${MINIUPNPC_DIR}/igd_desc_parse.c
-      ${MINIUPNPC_DIR}/minisoap.c
-      ${MINIUPNPC_DIR}/minissdpc.c
-      ${MINIUPNPC_DIR}/miniupnpc.c
-      ${MINIUPNPC_DIR}/miniwget.c
-      ${MINIUPNPC_DIR}/minixml.c
-      ${MINIUPNPC_DIR}/upnpcommands.c
-      ${MINIUPNPC_DIR}/upnperrors.c
-      ${MINIUPNPC_DIR}/upnpreplyparse.c
-  )
-  add_library(miniupnpc STATIC ${MINIUPNPC_SOURCES})
-  # Create miniupnpc/ subdirectory in build dir for #include <miniupnpc/...> paths
-  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include/miniupnpc")
-  foreach(HEADER ${MINIUPNPC_DIR}/*.h)
-    get_filename_component(HEADER_NAME ${HEADER} NAME)
-    configure_file(${HEADER} "${CMAKE_BINARY_DIR}/include/miniupnpc/${HEADER_NAME}" COPYONLY)
-  endforeach()
-  target_include_directories(miniupnpc PUBLIC ${CMAKE_BINARY_DIR}/include ${RAKNET_SRC_DIR})
-  if(WIN32)
-    target_compile_definitions(miniupnpc PRIVATE _CRT_SECURE_NO_WARNINGS MINIUPNP_STATICLIB)
-  endif()
+  message(FATAL_ERROR "System miniupnpc not found. Please install libminiupnpc-dev (Linux) or miniupnpc (vcpkg/Windows)")
 endif()
 
 # ── RakNet (static library) ──
