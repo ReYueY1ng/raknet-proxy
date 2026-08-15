@@ -31,8 +31,20 @@ if(EXISTS "${MINIUPNPC_VENDORED}/CMakeLists.txt")
   set(UPNPC_NO_INSTALL ON CACHE BOOL "" FORCE)
   add_subdirectory(${MINIUPNPC_VENDORED} ${CMAKE_BINARY_DIR}/miniupnpc_vendored)
   add_library(miniupnpc ALIAS libminiupnpc-static)
-  # Include dir for #include <miniupnpc/...>
-  set(MINIUPNPC_INCLUDE_DIR "${MINIUPNPC_VENDORED}/include" CACHE PATH "miniupnpc include dir")
+  # Vendored headers live flat in include/, but code uses #include <miniupnpc/...>.
+  # Create a miniupnpc/ subdir layout so <miniupnpc/miniupnpc.h> resolves.
+  set(MINIUPNPC_INCLUDE_DIR "${CMAKE_BINARY_DIR}/include")
+  file(MAKE_DIRECTORY "${MINIUPNPC_INCLUDE_DIR}/miniupnpc")
+  file(GLOB MINIUPNPC_HEADERS "${MINIUPNPC_VENDORED}/include/*.h")
+  foreach(HEADER ${MINIUPNPC_HEADERS})
+    get_filename_component(HEADER_NAME ${HEADER} NAME)
+    configure_file(${HEADER} "${MINIUPNPC_INCLUDE_DIR}/miniupnpc/${HEADER_NAME}" COPYONLY)
+  endforeach()
+  # miniupnpcstrings.h is generated into the miniupnpc build dir
+  set(MINIUPNPC_GEN_STR "${CMAKE_BINARY_DIR}/miniupnpc_vendored/miniupnpcstrings.h")
+  if(EXISTS "${MINIUPNPC_GEN_STR}")
+    configure_file(${MINIUPNPC_GEN_STR} "${MINIUPNPC_INCLUDE_DIR}/miniupnpc/miniupnpcstrings.h" COPYONLY)
+  endif()
 else()
   # Fall back to system-installed miniupnpc
   find_library(MINIUPNPC_LIBRARY miniupnpc)
