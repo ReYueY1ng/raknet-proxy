@@ -14,8 +14,8 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            cc: musl-gcc
-            cxx: musl-gcc
+            cc: gcc
+            cxx: g++
           - arch: arm64
             cc: aarch64-linux-gnu-gcc
             cxx: aarch64-linux-gnu-g++
@@ -29,32 +29,21 @@ jobs:
           sudo apt-get update
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          else
-            sudo apt-get install -y musl-tools
           fi
 
       - name: Build (static)
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            cmake -B build -S . \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_C_COMPILER=${{ matrix.cc }} \
-              -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
-              -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
-              -DCMAKE_SYSTEM_NAME=Linux \
-              -DCMAKE_SYSTEM_PROCESSOR=aarch64
-          else
-            export CC=${{ matrix.cc }}
-            export CXX=${{ matrix.cxx }}
-            cmake -B build -S . \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
-          fi
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
           cmake --build build --target raknet_proxy -j$(nproc)
 
       - name: Verify static binary
         run: |
           file build/raknet_proxy
+          ldd build/raknet_proxy 2>&1 | grep -E "static|not a dynamic" || echo "Note: libc may be dynamically linked"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -63,7 +52,7 @@ jobs:
           path: build/raknet_proxy
 
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,7 +83,7 @@ jobs:
             build/raknet_proxy.exe
 
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-13
     strategy:
       matrix:
         arch: [x86_64, arm64]
@@ -108,7 +97,9 @@ jobs:
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+            -DCMAKE_C_FLAGS="-D_DARWIN_C_SOURCE" \
+            -DCMAKE_CXX_FLAGS="-D_DARWIN_C_SOURCE"
           cmake --build build --target raknet_proxy -j$(sysctl -n hw.ncpu)
 
       - name: Upload artifact
