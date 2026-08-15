@@ -56,4 +56,9 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 # ── Proxy executable ──
 add_executable(raknet_proxy raknet_proxy.cpp)
 target_include_directories(raknet_proxy PRIVATE ${RAKNET_SRC_DIR} ${CMAKE_BINARY_DIR}/include)
-target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc pthread)
+if(WIN32)
+  # Windows: WinSock2 + vcpkg miniupnpc; no pthread needed
+  target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc ws2_32)
+else()
+  target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc pthread)
+endif()

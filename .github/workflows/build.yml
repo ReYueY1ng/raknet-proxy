@@ -8,17 +8,8 @@ on:
     branches: [master, main]
 
 jobs:
-  build-linux:
+  build-linux-amd64:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            cc: gcc
-            cxx: g++
-          - arch: arm64
-            cc: aarch64-linux-gnu-gcc
-            cxx: aarch64-linux-gnu-g++
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,22 +18,12 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            # Add arm64 arch to apt and install miniupnpc for cross-compilation
-            sudo dpkg --add-architecture arm64
-            sudo apt-get update
-            sudo apt-get install -y libminiupnpc-dev:arm64
-          else
-            sudo apt-get install -y libminiupnpc-dev
-          fi
+          sudo apt-get install -y libminiupnpc-dev
 
       - name: Build (static)
         run: |
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
           cmake --build build --target raknet_proxy -j$(nproc)
 
@@ -54,7 +35,37 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: raknet_proxy-linux-${{ matrix.arch }}
+          name: raknet_proxy-linux-amd64
+          path: build/raknet_proxy
+
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libminiupnpc-dev
+
+      - name: Build (static)
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
+          cmake --build build --target raknet_proxy -j$(nproc)
+
+      - name: Verify static binary
+        run: |
+          file build/raknet_proxy
+          ldd build/raknet_proxy 2>&1 | grep -E "static|not a dynamic" || echo "Note: libc may be dynamically linked"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raknet_proxy-linux-arm64
           path: build/raknet_proxy
 
   build-windows:
@@ -96,7 +107,7 @@ jobs:
             build/raknet_proxy.exe
 
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux-amd64, build-linux-arm64, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
