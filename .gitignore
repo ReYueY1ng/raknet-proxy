@@ -80,3 +80,5 @@ Testing/
 
 # Compiled binary
 raknet_proxy
+logs_*/
+RakNet_build/
