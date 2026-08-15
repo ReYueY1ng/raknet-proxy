@@ -15,10 +15,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install toolchain
+      - name: Fetch miniupnpc source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libminiupnpc-dev
+          mkdir -p third_party
+          curl -sL -o /tmp/miniupnp.tar.gz \
+            https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_2_8.tar.gz
+          tar -xzf /tmp/miniupnp.tar.gz -C third_party
+          mv third_party/miniupnp-miniupnpc_2_2_8/miniupnpc third_party/miniupnpc
+          rm -rf third_party/miniupnp-miniupnpc_2_2_8
 
       - name: Build (static)
         run: |
@@ -45,10 +49,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install toolchain
+      - name: Fetch miniupnpc source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libminiupnpc-dev
+          mkdir -p third_party
+          curl -sL -o /tmp/miniupnp.tar.gz \
+            https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_2_8.tar.gz
+          tar -xzf /tmp/miniupnp.tar.gz -C third_party
+          mv third_party/miniupnp-miniupnpc_2_2_8/miniupnpc third_party/miniupnpc
+          rm -rf third_party/miniupnp-miniupnpc_2_2_8
 
       - name: Build (static)
         run: |
@@ -75,18 +83,21 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install miniupnpc via vcpkg
+      - name: Fetch miniupnpc source
         shell: pwsh
         run: |
-          vcpkg install miniupnpc:x64-windows-static
+          New-Item -ItemType Directory -Force -Path third_party | Out-Null
+          curl.exe -sL -o C:\miniupnp.tar.gz `
+            https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_2_8.tar.gz
+          tar -xzf C:\miniupnp.tar.gz -C third_party
+          Move-Item third_party\miniupnp-miniupnpc_2_2_8\miniupnpc third_party\miniupnpc
+          Remove-Item -Recurse -Force third_party\miniupnp-miniupnpc_2_2_8
 
       - name: Build (MSVC static CRT)
         shell: cmd
         run: |
           cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
-            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build build --target raknet_proxy --config Release -j %NUMBER_OF_PROCESSORS%
 
       - name: Verify binary

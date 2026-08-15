@@ -21,19 +21,33 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/patch/minissdpc.c")
 endif()
 
 # ── MiniUPnPc ──
-# Use system-installed miniupnpc (newer API compatible)
-find_library(MINIUPNPC_LIBRARY miniupnpc)
-find_path(MINIUPNPC_INCLUDE_DIR miniupnpc/miniupnpc.h)
-
-if(MINIUPNPC_LIBRARY AND MINIUPNPC_INCLUDE_DIR)
-  message(STATUS "Using system miniupnpc: ${MINIUPNPC_LIBRARY}")
-  add_library(miniupnpc INTERFACE IMPORTED)
-  set_target_properties(miniupnpc PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${MINIUPNPC_INCLUDE_DIR}"
-    INTERFACE_LINK_LIBRARIES "${MINIUPNPC_LIBRARY}"
-  )
+# Priority: vendored source (downloaded by CI) > system package
+set(MINIUPNPC_VENDORED "${CMAKE_SOURCE_DIR}/third_party/miniupnpc")
+if(EXISTS "${MINIUPNPC_VENDORED}/CMakeLists.txt")
+  message(STATUS "Building miniupnpc from vendored source: ${MINIUPNPC_VENDORED}")
+  set(UPNPC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(UPNPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(UPNPC_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+  set(UPNPC_NO_INSTALL ON CACHE BOOL "" FORCE)
+  add_subdirectory(${MINIUPNPC_VENDORED} ${CMAKE_BINARY_DIR}/miniupnpc_vendored)
+  add_library(miniupnpc ALIAS libminiupnpc-static)
+  # Include dir for #include <miniupnpc/...>
+  set(MINIUPNPC_INCLUDE_DIR "${MINIUPNPC_VENDORED}/include" CACHE PATH "miniupnpc include dir")
 else()
-  message(FATAL_ERROR "System miniupnpc not found. Please install libminiupnpc-dev (Linux) or miniupnpc (vcpkg/Windows)")
+  # Fall back to system-installed miniupnpc
+  find_library(MINIUPNPC_LIBRARY miniupnpc)
+  find_path(MINIUPNPC_INCLUDE_DIR miniupnpc/miniupnpc.h)
+
+  if(MINIUPNPC_LIBRARY AND MINIUPNPC_INCLUDE_DIR)
+    message(STATUS "Using system miniupnpc: ${MINIUPNPC_LIBRARY}")
+    add_library(miniupnpc INTERFACE IMPORTED)
+    set_target_properties(miniupnpc PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${MINIUPNPC_INCLUDE_DIR}"
+      INTERFACE_LINK_LIBRARIES "${MINIUPNPC_LIBRARY}"
+    )
+  else()
+    message(FATAL_ERROR "miniupnpc not found. Download source to third_party/miniupnpc or install libminiupnpc-dev")
+  endif()
 endif()
 
 # ── RakNet (static library) ──
@@ -55,9 +69,9 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # ── Proxy executable ──
 add_executable(raknet_proxy raknet_proxy.cpp)
-target_include_directories(raknet_proxy PRIVATE ${RAKNET_SRC_DIR} ${CMAKE_BINARY_DIR}/include)
+target_include_directories(raknet_proxy PRIVATE ${RAKNET_SRC_DIR} ${MINIUPNPC_INCLUDE_DIR})
 if(WIN32)
-  # Windows: WinSock2 + vcpkg miniupnpc; no pthread needed
+  # Windows: WinSock2 + miniupnpc; no pthread needed
   target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc ws2_32)
 else()
   target_link_libraries(raknet_proxy RakNetLibStatic miniupnpc pthread)
