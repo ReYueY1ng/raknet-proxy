@@ -27,9 +27,11 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y libminiupnpc-dev
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libminiupnpc-dev:arm64 || true
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            # libminiupnpc-dev:arm64 not available, will build from source
+          else
+            sudo apt-get install -y libminiupnpc-dev
           fi
 
       - name: Build (static)
