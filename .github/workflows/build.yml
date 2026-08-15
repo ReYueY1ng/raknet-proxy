@@ -76,6 +76,52 @@ jobs:
           name: raknet_proxy-linux-arm64
           path: build/raknet_proxy
 
+  build-linux-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Fetch miniupnpc source
+        run: |
+          mkdir -p third_party
+          curl -sL -o /tmp/miniupnp.tar.gz \
+            https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_2_8.tar.gz
+          tar -xzf /tmp/miniupnp.tar.gz -C third_party
+          mv third_party/miniupnp-miniupnpc_2_2_8/miniupnpc third_party/miniupnpc
+          rm -rf third_party/miniupnp-miniupnpc_2_2_8
+
+      - name: Fetch musl cross toolchain
+        run: |
+          curl -sL -o /tmp/musl-cross.tgz \
+            https://musl.cc/aarch64-linux-musl-cross.tgz
+          sudo tar -xzf /tmp/musl-cross.tgz -C /opt
+          /opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++ --version | head -1
+
+      - name: Build (fully static, for Android)
+        run: |
+          export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=aarch64-linux-musl-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-musl-g++ \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_EXE_LINKER_FLAGS="-static"
+          cmake --build build --target raknet_proxy -j$(nproc)
+
+      - name: Verify static binary
+        run: |
+          file build/raknet_proxy
+          test -z "$(ldd build/raknet_proxy 2>&1 | grep '=>')" && echo "Fully static: OK"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raknet_proxy-android-arm64
+          path: build/raknet_proxy
+
   build-windows:
     runs-on: windows-2022
     steps:
@@ -118,7 +164,7 @@ jobs:
             build/raknet_proxy.exe
 
   release:
-    needs: [build-linux-amd64, build-linux-arm64, build-windows]
+    needs: [build-linux-amd64, build-linux-arm64, build-linux-android, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -134,6 +180,7 @@ jobs:
           mkdir -p dist
           cp artifacts/raknet_proxy-linux-amd64/raknet_proxy dist/raknet_proxy-linux-amd64
           cp artifacts/raknet_proxy-linux-arm64/raknet_proxy dist/raknet_proxy-linux-arm64
+          cp artifacts/raknet_proxy-android-arm64/raknet_proxy dist/raknet_proxy-android-arm64
           cp artifacts/raknet_proxy-windows-amd64/raknet_proxy.exe dist/raknet_proxy-windows-amd64.exe 2>/dev/null \
             || cp artifacts/raknet_proxy-windows-amd64/Release/raknet_proxy.exe dist/raknet_proxy-windows-amd64.exe 2>/dev/null \
             || true
@@ -144,5 +191,6 @@ jobs:
           files: |
             dist/raknet_proxy-linux-amd64
             dist/raknet_proxy-linux-arm64
+            dist/raknet_proxy-android-arm64
             dist/raknet_proxy-windows-amd64.exe
           generate_release_notes: true
