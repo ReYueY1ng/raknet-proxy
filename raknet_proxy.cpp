@@ -516,12 +516,17 @@ int main(int argc, char **argv) {
   // 多客户端连接表 (UIN → ClientContext)
   std::map<uint32_t, ClientContext> clients;
 
+#ifdef _WIN32
+  signal(SIGINT, SignalHandler);
+  signal(SIGTERM, SignalHandler);
+#else
   struct sigaction sa;
   sa.sa_handler = SignalHandler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
   sigaction(SIGINT, &sa, NULL);
   sigaction(SIGTERM, &sa, NULL);
+#endif
 
   printf("\n服务器运行中，按 Ctrl+C 退出...\n\n");
 
